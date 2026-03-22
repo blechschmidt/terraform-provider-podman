@@ -1,0 +1,1 @@
+terraform import podman_container.example CONTAINER_ID

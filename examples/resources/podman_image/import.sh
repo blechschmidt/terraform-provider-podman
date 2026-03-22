@@ -1,0 +1,1 @@
+terraform import podman_image.example IMAGE_NAME
