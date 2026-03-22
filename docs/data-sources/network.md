@@ -11,7 +11,21 @@ Reads information about an existing Podman network. This data source can be used
 
 ## Example Usage
 
-{{tffile "examples/data-sources/podman_network/data-source.tf"}}
+```hcl
+# Look up an existing network by name
+data "podman_network" "my_network" {
+  name = "my-bridge-network"
+}
+
+# Use network attributes
+output "network_driver" {
+  value = data.podman_network.my_network.driver
+}
+
+output "network_subnet" {
+  value = data.podman_network.my_network.ipam_config[0].subnet
+}
+```
 
 ## Argument Reference
 

@@ -11,7 +11,21 @@ Reads information about an existing Podman plugin. You can look up a plugin by i
 
 ## Example Usage
 
-{{tffile "examples/data-sources/podman_plugin/data-source.tf"}}
+```hcl
+# Look up a plugin by alias
+data "podman_plugin" "by_alias" {
+  alias = "my-volume-plugin"
+}
+
+# Look up a plugin by ID
+data "podman_plugin" "by_id" {
+  id = "abc123def456"
+}
+
+output "plugin_enabled" {
+  value = data.podman_plugin.by_alias.enabled
+}
+```
 
 ## Argument Reference
 
