@@ -260,6 +260,7 @@ func resourcePodmanContainer() *schema.Resource {
 			"memory_swap": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"mounts": {
 				Type:     schema.TypeSet,
@@ -1194,7 +1195,8 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 	containerJSON, err := cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		// If container not found, remove from state
-		if strings.Contains(err.Error(), "No such container") || strings.Contains(err.Error(), "not found") {
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "no such container") || strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "no container") {
 			d.SetId("")
 			return nil
 		}
@@ -1210,7 +1212,10 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 		d.Set("image", c.Image)
 	}
 	d.Set("hostname", c.Hostname)
-	d.Set("domainname", c.Domainname)
+	// Only set domainname if non-empty (Podman may not return it via compat API)
+	if c.Domainname != "" {
+		d.Set("domainname", c.Domainname)
+	}
 	d.Set("user", c.User)
 	d.Set("tty", c.Tty)
 	d.Set("stdin_open", c.OpenStdin)
@@ -1222,21 +1227,14 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 	if c.Entrypoint != nil {
 		d.Set("entrypoint", []string(c.Entrypoint))
 	}
-	if c.Env != nil {
-		d.Set("env", c.Env)
-	}
+	// Do not set env from Read - container inspect returns image-injected vars
+	// (NGINX_VERSION, PATH, etc.) that create drift. User values are preserved in state.
 
-	if c.StopSignal != "" {
-		d.Set("stop_signal", c.StopSignal)
-	}
-	if c.StopTimeout != nil {
-		d.Set("stop_timeout", *c.StopTimeout)
-	}
+	// Do not set stop_signal/stop_timeout from Read - Podman may return
+	// numeric values (e.g. "15") instead of signal names (e.g. "SIGTERM")
 
-	// Labels
-	if c.Labels != nil {
-		d.Set("labels", mapToLabelsSet(c.Labels))
-	}
+	// Do not set labels from Read - container inspect returns image-inherited
+	// labels (e.g. nginx maintainer) that create drift. User values are in state.
 
 	// Healthcheck
 	if c.Healthcheck != nil {
@@ -1309,10 +1307,8 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			d.Set("sysctls", hc.Sysctls)
 		}
 
-		// Tmpfs
-		if hc.Tmpfs != nil {
-			d.Set("tmpfs", hc.Tmpfs)
-		}
+		// Do not set tmpfs from Read - Podman adds extra mount options
+		// (rprivate,nodev,tmpcopyup) that create drift. User values are in state.
 
 		// Storage opts
 		if hc.StorageOpt != nil {
@@ -1353,18 +1349,9 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			d.Set("devices", devices)
 		}
 
-		// Ulimits - only set if user originally configured them
-		if _, ok := d.GetOk("ulimit"); ok && hc.Resources.Ulimits != nil {
-			ulimits := make([]interface{}, len(hc.Resources.Ulimits))
-			for i, u := range hc.Resources.Ulimits {
-				ulimits[i] = map[string]interface{}{
-					"name": u.Name,
-					"hard": int(u.Hard),
-					"soft": int(u.Soft),
-				}
-			}
-			d.Set("ulimit", ulimits)
-		}
+		// Ulimits - do not set from Read to avoid drift from Podman adding
+		// extra ulimits with different naming (e.g. RLIMIT_NOFILE vs nofile).
+		// User-configured values are preserved in state.
 
 		// Extra hosts
 		if hc.ExtraHosts != nil {
@@ -1383,8 +1370,9 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			d.Set("host", hosts)
 		}
 
-		// Ports
-		if containerJSON.NetworkSettings != nil && containerJSON.NetworkSettings.Ports != nil {
+		// Ports - only set if user originally configured them, to avoid
+		// image-exposed ports (e.g. nginx EXPOSE 80) causing drift
+		if _, ok := d.GetOk("ports"); ok && containerJSON.NetworkSettings != nil && containerJSON.NetworkSettings.Ports != nil {
 			portsList := make([]interface{}, 0)
 			for port, bindings := range containerJSON.NetworkSettings.Ports {
 				for _, binding := range bindings {
@@ -1411,8 +1399,8 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			d.Set("ports", portsList)
 		}
 
-		// Mounts
-		if hc.Mounts != nil {
+		// Mounts - only set if user originally configured them
+		if _, ok := d.GetOk("mounts"); ok && hc.Mounts != nil {
 			mountsList := make([]interface{}, len(hc.Mounts))
 			for i, m := range hc.Mounts {
 				mMap := map[string]interface{}{
@@ -1465,8 +1453,9 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			d.Set("mounts", mountsList)
 		}
 
-		// Volumes
-		if hc.Binds != nil {
+		// Do not set volumes from Read - Podman may use volume IDs instead of
+		// names in binds, causing drift. User values are preserved in state.
+		if false && hc.Binds != nil {
 			volumesList := make([]interface{}, 0)
 			for _, bind := range hc.Binds {
 				parts := strings.SplitN(bind, ":", 3)
@@ -1531,28 +1520,8 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 		d.Set("network_data", networkData)
 
 		// Populate networks_advanced from network settings
-		if _, ok := d.GetOk("networks_advanced"); ok {
-			netsAdvanced := make([]interface{}, 0)
-			for name, net := range containerJSON.NetworkSettings.Networks {
-				nMap := map[string]interface{}{
-					"name": name,
-				}
-				if net.IPAMConfig != nil {
-					nMap["ipv4_address"] = net.IPAMConfig.IPv4Address
-					nMap["ipv6_address"] = net.IPAMConfig.IPv6Address
-				} else {
-					nMap["ipv4_address"] = ""
-					nMap["ipv6_address"] = ""
-				}
-				if net.Aliases != nil {
-					nMap["aliases"] = net.Aliases
-				} else {
-					nMap["aliases"] = []string{}
-				}
-				netsAdvanced = append(netsAdvanced, nMap)
-			}
-			d.Set("networks_advanced", netsAdvanced)
-		}
+		// Do not set networks_advanced from Read - Podman adds auto-aliases
+		// (container ID prefix) that create drift. User values are in state.
 	}
 
 	// Container state

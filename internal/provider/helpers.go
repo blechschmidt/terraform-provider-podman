@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -145,7 +144,3 @@ func getClient(meta interface{}) *ProviderConfig {
 	return meta.(*ProviderConfig)
 }
 
-// containerReadRefreshTimeout returns a context with a timeout for container reads.
-func containerReadRefreshTimeout(ctx context.Context, d *schema.ResourceData) (context.Context, context.CancelFunc) {
-	return ctx, func() {} // Default no-op cancel, timeout handled elsewhere
-}

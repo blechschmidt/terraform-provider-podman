@@ -105,6 +105,10 @@ func resourcePodmanSecretDelete(ctx context.Context, d *schema.ResourceData, met
 	var diags diag.Diagnostics
 
 	if err := client.SecretRemove(ctx, d.Id()); err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "no such") {
+			d.SetId("")
+			return diags
+		}
 		return diag.FromErr(fmt.Errorf("error removing secret %s: %w", d.Id(), err))
 	}
 

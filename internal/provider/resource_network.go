@@ -43,11 +43,13 @@ func resourcePodmanNetwork() *schema.Resource {
 			"ipam_config": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"aux_address": {
 							Type:     schema.TypeMap,
 							Optional: true,
+							Computed: true,
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
 							},
@@ -55,14 +57,17 @@ func resourcePodmanNetwork() *schema.Resource {
 						"gateway": {
 							Type:     schema.TypeString,
 							Optional: true,
+							Computed: true,
 						},
 						"ip_range": {
 							Type:     schema.TypeString,
 							Optional: true,
+							Computed: true,
 						},
 						"subnet": {
 							Type:     schema.TypeString,
 							Optional: true,
+							Computed: true,
 						},
 					},
 				},
@@ -76,6 +81,7 @@ func resourcePodmanNetwork() *schema.Resource {
 			"ipam_options": {
 				Type:     schema.TypeMap,
 				Optional: true,
+				Computed: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
@@ -192,10 +198,12 @@ func resourcePodmanNetworkRead(ctx context.Context, d *schema.ResourceData, meta
 	ipamConfigs := make([]interface{}, 0, len(net.IPAM.Config))
 	for _, cfg := range net.IPAM.Config {
 		m := map[string]interface{}{
-			"subnet":      cfg.Subnet,
-			"gateway":     cfg.Gateway,
-			"ip_range":    cfg.IPRange,
-			"aux_address": cfg.AuxAddress,
+			"subnet":   cfg.Subnet,
+			"gateway":  cfg.Gateway,
+			"ip_range": cfg.IPRange,
+		}
+		if len(cfg.AuxAddress) > 0 {
+			m["aux_address"] = cfg.AuxAddress
 		}
 		ipamConfigs = append(ipamConfigs, m)
 	}
