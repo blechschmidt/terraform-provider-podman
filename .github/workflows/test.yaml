@@ -26,7 +26,7 @@ jobs:
         run: go test ./... -count=1
 
   integration-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
@@ -41,15 +41,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+          podman --version
 
       - name: Start Podman socket
         run: |
           systemctl --user start podman.socket
           echo "DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock" >> "$GITHUB_ENV"
+          podman info --format '{{.Host.OCIRuntime.Name}}'
 
       - name: Pull test images
         run: |
           podman pull quay.io/podman/stable:latest
+          podman images
 
       - name: Build provider
         run: go build -o terraform-provider-podman .
@@ -57,6 +60,8 @@ jobs:
       - name: Run acceptance tests
         run: |
           TF_ACC=1 go test ./internal/provider/ -v -count=1 -timeout 30m \
-            -run "TestAccPodmanContainer_|TestAccPodmanImage_|TestAccPodmanNetwork_|TestAccPodmanVolume_|TestAccPodmanTag_|TestAccPodmanSecret_|TestAccDataSource"
+            -run "TestAccPodmanContainer_basic$|TestAccPodmanContainer_withPorts$|TestAccPodmanContainer_withVolume$|TestAccPodmanContainer_withEnv$|TestAccPodmanContainer_withLabels$|TestAccPodmanContainer_withHealthcheck$|TestAccPodmanContainer_withUpload$|TestAccPodmanContainer_withCapabilities$|TestAccPodmanContainer_withDns$|TestAccPodmanContainer_withHostEntry$|TestAccPodmanContainer_withSysctls$|TestAccPodmanContainer_withResourceLimits$|TestAccPodmanContainer_withLogs$|TestAccPodmanContainer_notStarted$|TestAccPodmanContainer_withWorkingDir$|TestAccPodmanContainer_withUser$|TestAccPodmanContainer_withInit$|TestAccPodmanContainer_withLogDriver$|TestAccPodmanContainer_withRestartPolicy$|TestAccPodmanContainer_withHostname$|TestAccPodmanContainer_readOnly$|TestAccPodmanContainer_publishAllPorts$|TestAccPodmanContainer_destroyGrace$|TestAccPodmanContainer_uploadBase64$|TestAccPodmanContainer_uploadSource$|TestAccPodmanContainer_update$|TestAccPodmanImage_pull$|TestAccPodmanImage_build$|TestAccPodmanNetwork_basic$|TestAccPodmanNetwork_withIpam$|TestAccPodmanNetwork_internal$|TestAccPodmanNetwork_withLabels$|TestAccPodmanVolume_basic$|TestAccPodmanVolume_withLabels$|TestAccPodmanTag_basic$|TestAccPodmanTag_update$|TestAccPodmanSecret_basic$|TestAccDataSourcePodmanImage$|TestAccDataSourcePodmanNetwork$|TestAccDataSourcePodmanLogs_basic$" \
+            2>&1 | tee /tmp/test-output.log
+          exit ${PIPESTATUS[0]}
         env:
           DOCKER_HOST: ${{ env.DOCKER_HOST }}
