@@ -1,0 +1,50 @@
+name: Acceptance Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1' # Weekly on Monday at 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+
+      - name: Start Podman socket
+        run: |
+          systemctl --user start podman.socket
+          echo "DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock" >> "$GITHUB_ENV"
+
+      - name: Pull test images
+        run: |
+          podman pull quay.io/podman/stable:latest
+
+      - name: Run acceptance tests
+        run: |
+          TF_ACC=1 go test ./internal/provider/ -v -count=1 -timeout 30m 2>&1 | tee /tmp/test-output.log; TEST_EXIT=${PIPESTATUS[0]}
+
+          echo '## Acceptance Test Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E "^(--- PASS|--- FAIL|--- SKIP|PASS|FAIL|ok )" /tmp/test-output.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          exit $TEST_EXIT
+        env:
+          DOCKER_HOST: ${{ env.DOCKER_HOST }}
