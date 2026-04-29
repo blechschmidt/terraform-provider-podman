@@ -208,6 +208,49 @@ resource "podman_container" "with_upload" {
 }
 ```
 
+### Container from a Rootfs Directory
+
+Instead of an image, the container can be created from an exploded
+rootfs on the host. This mirrors the `podman run --rootfs` flag and is
+useful for chrooting into a directory tree, running OCI bundles you
+unpacked yourself, or running containers without pulling an image.
+
+`image` and `rootfs` are mutually exclusive — exactly one must be set.
+
+```terraform
+resource "podman_container" "from_rootfs" {
+  name   = "alpine-rootfs"
+  rootfs = "/var/lib/rootfs/alpine"
+
+  command = ["/bin/sh", "-c", "echo hello && sleep infinity"]
+}
+```
+
+Use `rootfs_overlay = true` to mount the rootfs as a read-only overlay
+(equivalent to `--rootfs /path:O`), so changes the container makes are
+discarded on stop:
+
+```terraform
+resource "podman_container" "overlay_rootfs" {
+  name           = "ephemeral-rootfs"
+  rootfs         = "/var/lib/rootfs/alpine"
+  rootfs_overlay = true
+
+  command = ["/bin/sh"]
+}
+```
+
+Because rootfs containers are created via Podman's native libpod API
+rather than the Docker compatibility API, a few image-only options are
+silently ignored when `rootfs` is set: `healthcheck`, `runtime`,
+`cgroupns_mode`, `pid_mode`, `ipc_mode`, `userns_mode`, `storage_opts`,
+`tmpfs`, `ulimit`, `domainname`, and `devices`. Most other options
+(command, env, labels, mounts, volumes, ports, capabilities, dns, host,
+network_mode, networks_advanced, sysctls, security_opts, log_driver,
+log_opts, restart, privileged, read_only, init, shm_size,
+stop_signal/stop_timeout, tty, stdin_open, user, working_dir, hostname,
+group_add, rm) work the same as in image-based containers.
+
 ### Container with Resource Limits
 
 ```terraform
@@ -243,8 +286,9 @@ resource "podman_container" "with_limits" {
 
 ### Required
 
-- `image` (String) The ID or name of the image to use for the container. Forces recreation if changed.
 - `name` (String) The name of the container. Forces recreation if changed.
+
+Exactly one of `image` or `rootfs` must be set.
 
 ### Optional
 
@@ -268,6 +312,7 @@ resource "podman_container" "with_limits" {
 - `healthcheck` (Block List, Max: 1) Healthcheck configuration for the container. See [healthcheck](#nestedblock--healthcheck) below.
 - `host` (Block Set) Additional entries to add to the container's `/etc/hosts` file. Forces recreation if changed. See [host](#nestedblock--host) below.
 - `hostname` (String) The hostname of the container. Forces recreation if changed.
+- `image` (String) The ID or name of the image to use for the container. Forces recreation if changed. Mutually exclusive with `rootfs`.
 - `init` (Boolean) Whether to run an init process inside the container that forwards signals and reaps processes.
 - `ipc_mode` (String) IPC namespace mode for the container. Forces recreation if changed.
 - `labels` (Block Set) Labels to apply to the container. See [labels](#nestedblock--labels) below.
@@ -289,6 +334,9 @@ resource "podman_container" "with_limits" {
 - `remove_volumes` (Boolean) Whether to remove anonymous volumes associated with the container on destroy. Defaults to `true`.
 - `restart` (String) The restart policy for the container. One of `no`, `on-failure`, `always`, or `unless-stopped`. Defaults to `no`.
 - `rm` (Boolean) Whether to automatically remove the container when it stops. Defaults to `false`.
+- `rootfs` (String) Path on the host to an exploded container rootfs to use instead of an image. Equivalent to `podman run --rootfs`. Forces recreation if changed. Mutually exclusive with `image`. See [rootfs](#container-from-a-rootfs-directory) below.
+- `rootfs_mapping` (String) UID/GID idmap specification for the rootfs (e.g. `idmap` or `idmap=uids=0-1-10;gids=0-1-10`). Equivalent to the `:idmap` modifier of `podman run --rootfs`. Forces recreation if changed. Requires `rootfs`.
+- `rootfs_overlay` (Boolean) Mount the rootfs as a read-only overlay so container writes are discarded on stop. Equivalent to the `:O` modifier of `podman run --rootfs`. Defaults to `false`. Forces recreation if changed. Requires `rootfs`.
 - `runtime` (String) The OCI runtime to use for the container. Forces recreation if changed.
 - `security_opts` (Set of String) Security options for the container. Forces recreation if changed.
 - `shm_size` (Number) The size of `/dev/shm` in bytes. Forces recreation if changed.

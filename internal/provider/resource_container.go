@@ -37,11 +37,33 @@ func resourcePodmanContainer() *schema.Resource {
 				Required: true,
 				ForceNew: true,
 			},
+
+			// One of image or rootfs is required
 			"image": {
 				Type:             schema.TypeString,
-				Required:         true,
+				Optional:         true,
 				ForceNew:         true,
 				DiffSuppressFunc: suppressIfIDOrNameEqual,
+				ExactlyOneOf:     []string{"image", "rootfs"},
+			},
+			"rootfs": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ExactlyOneOf: []string{"image", "rootfs"},
+			},
+			"rootfs_overlay": {
+				Type:         schema.TypeBool,
+				Optional:     true,
+				ForceNew:     true,
+				Default:      false,
+				RequiredWith: []string{"rootfs"},
+			},
+			"rootfs_mapping": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				RequiredWith: []string{"rootfs"},
 			},
 
 			// Optional
@@ -672,7 +694,23 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 	cli := config.Client
 
 	imageName := d.Get("image").(string)
+	rootfsPath := d.Get("rootfs").(string)
 	containerName := d.Get("name").(string)
+
+	// rootfs is mutually exclusive with image and goes through the libpod
+	// native API, since the Docker compat ContainerCreate has no rootfs field.
+	if rootfsPath != "" {
+		spec := libpodSpecGen(d)
+		id, err := libpodCreateContainer(ctx, cli, spec)
+		if err != nil {
+			return diag.FromErr(fmt.Errorf("error creating rootfs container %s: %w", containerName, err))
+		}
+		d.SetId(id)
+		if diags := connectAdvancedNetworks(ctx, cli, d, id, false); diags != nil {
+			return diags
+		}
+		return startPodmanContainerAfterCreate(ctx, d, meta, id, containerName)
+	}
 
 	// If the image is a sha256 digest, resolve it to a repo tag for Podman compat API
 	if strings.HasPrefix(imageName, "sha256:") {
@@ -1072,42 +1110,61 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 
 	d.SetId(body.ID)
 
-	// Handle uploads before starting
+	if diags := connectAdvancedNetworks(ctx, cli, d, body.ID, true); diags != nil {
+		return diags
+	}
+	return startPodmanContainerAfterCreate(ctx, d, meta, body.ID, containerName)
+}
+
+// connectAdvancedNetworks connects the container to networks declared in
+// networks_advanced. When skipFirst is true the first network is assumed
+// to have been attached at create time (Docker compat path); when false
+// (libpod rootfs path) every network is connected here.
+func connectAdvancedNetworks(ctx context.Context, cli interface {
+	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
+}, d *schema.ResourceData, containerID string, skipFirst bool) diag.Diagnostics {
+	v, ok := d.GetOk("networks_advanced")
+	if !ok {
+		return nil
+	}
+	nets := v.(*schema.Set).List()
+	for i, netRaw := range nets {
+		if skipFirst && i == 0 {
+			continue
+		}
+		n := netRaw.(map[string]interface{})
+		epConfig := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{}}
+		if ipv4, ok := n["ipv4_address"].(string); ok && ipv4 != "" {
+			epConfig.IPAMConfig.IPv4Address = ipv4
+		}
+		if ipv6, ok := n["ipv6_address"].(string); ok && ipv6 != "" {
+			epConfig.IPAMConfig.IPv6Address = ipv6
+		}
+		if aliases, ok := n["aliases"]; ok {
+			epConfig.Aliases = stringSetToSlice(aliases)
+		}
+		if err := cli.NetworkConnect(ctx, n["name"].(string), containerID, epConfig); err != nil {
+			return diag.FromErr(fmt.Errorf("error connecting container to network %s: %w", n["name"].(string), err))
+		}
+	}
+	return nil
+}
+
+// startPodmanContainerAfterCreate runs the steps shared by the Docker
+// compat and libpod create paths: file uploads, attach/start/wait, log
+// collection, and the final Read.
+func startPodmanContainerAfterCreate(ctx context.Context, d *schema.ResourceData, meta interface{}, containerID, containerName string) diag.Diagnostics {
+	cli := getClient(meta).Client
+
 	if v, ok := d.GetOk("upload"); ok {
 		for _, uploadRaw := range v.(*schema.Set).List() {
 			upload := uploadRaw.(map[string]interface{})
-			if err := uploadFileToContainer(ctx, cli, body.ID, upload); err != nil {
+			if err := uploadFileToContainer(ctx, cli, containerID, upload); err != nil {
 				return diag.FromErr(fmt.Errorf("error uploading file to container: %w", err))
 			}
 		}
 	}
 
-	// Connect additional networks (skip the first since it was attached at create)
-	if v, ok := d.GetOk("networks_advanced"); ok {
-		nets := v.(*schema.Set).List()
-		for i, netRaw := range nets {
-			if i == 0 {
-				continue
-			}
-			n := netRaw.(map[string]interface{})
-			epConfig := &network.EndpointSettings{}
-			epConfig.IPAMConfig = &network.EndpointIPAMConfig{}
-			if ipv4, ok := n["ipv4_address"].(string); ok && ipv4 != "" {
-				epConfig.IPAMConfig.IPv4Address = ipv4
-			}
-			if ipv6, ok := n["ipv6_address"].(string); ok && ipv6 != "" {
-				epConfig.IPAMConfig.IPv6Address = ipv6
-			}
-			if aliases, ok := n["aliases"]; ok {
-				epConfig.Aliases = stringSetToSlice(aliases)
-			}
-			if err := cli.NetworkConnect(ctx, n["name"].(string), body.ID, epConfig); err != nil {
-				return diag.FromErr(fmt.Errorf("error connecting container to network %s: %w", n["name"].(string), err))
-			}
-		}
-	}
-
-	// Handle attach mode
 	if d.Get("attach").(bool) {
 		attachOpts := container.AttachOptions{
 			Stream: true,
@@ -1115,23 +1172,20 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 			Stderr: true,
 			Logs:   d.Get("logs").(bool),
 		}
-		attachResp, err := cli.ContainerAttach(ctx, body.ID, attachOpts)
+		attachResp, err := cli.ContainerAttach(ctx, containerID, attachOpts)
 		if err != nil {
 			return diag.FromErr(fmt.Errorf("error attaching to container %s: %w", containerName, err))
 		}
 		defer attachResp.Close()
 
-		// Start the container
-		if err := cli.ContainerStart(ctx, body.ID, container.StartOptions{}); err != nil {
+		if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 			return diag.FromErr(fmt.Errorf("error starting container %s: %w", containerName, err))
 		}
 
-		// Read logs
 		var logBuf bytes.Buffer
 		_, _ = io.Copy(&logBuf, attachResp.Reader)
 
-		// Wait for the container to finish
-		waitCh, errCh := cli.ContainerWait(ctx, body.ID, container.WaitConditionNotRunning)
+		waitCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
 		select {
 		case waitResult := <-waitCh:
 			d.Set("exit_code", int(waitResult.StatusCode))
@@ -1143,8 +1197,7 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 
 		d.Set("container_logs", logBuf.String())
 	} else if d.Get("start").(bool) {
-		// Start the container
-		if err := cli.ContainerStart(ctx, body.ID, container.StartOptions{}); err != nil {
+		if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 			return diag.FromErr(fmt.Errorf("error starting container %s: %w", containerName, err))
 		}
 
@@ -1153,7 +1206,7 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 			waitCtx, cancel := context.WithTimeout(ctx, time.Duration(waitTimeout)*time.Second)
 			defer cancel()
 
-			waitCh, errCh := cli.ContainerWait(waitCtx, body.ID, container.WaitConditionNotRunning)
+			waitCh, errCh := cli.ContainerWait(waitCtx, containerID, container.WaitConditionNotRunning)
 			select {
 			case waitResult := <-waitCh:
 				d.Set("exit_code", int(waitResult.StatusCode))
@@ -1167,13 +1220,12 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 		}
 	}
 
-	// Fetch logs if requested
 	if d.Get("logs").(bool) && !d.Get("attach").(bool) {
 		logsOpts := container.LogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 		}
-		logsReader, err := cli.ContainerLogs(ctx, body.ID, logsOpts)
+		logsReader, err := cli.ContainerLogs(ctx, containerID, logsOpts)
 		if err != nil {
 			return diag.FromErr(fmt.Errorf("error reading logs for container %s: %w", containerName, err))
 		}
@@ -1207,8 +1259,10 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 	hc := containerJSON.HostConfig
 
 	d.Set("name", strings.TrimPrefix(containerJSON.Name, "/"))
-	// Preserve the image reference from config/state to avoid sha256 vs name drift
-	if currentImage := d.Get("image").(string); currentImage == "" {
+	// Preserve the image reference from config/state to avoid sha256 vs name drift.
+	// For rootfs-based containers, leave image empty — the inspect response may
+	// echo back a "rootfs:..." pseudo-image that would clobber the unset state.
+	if currentImage := d.Get("image").(string); currentImage == "" && d.Get("rootfs").(string) == "" {
 		d.Set("image", c.Image)
 	}
 	d.Set("hostname", c.Hostname)
