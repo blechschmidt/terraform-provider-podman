@@ -107,6 +107,8 @@ func TestProviderSchemaHasAllDataSources(t *testing.T) {
 		"podman_registry_image",
 		"podman_logs",
 		"podman_registry_image_manifests",
+		"podman_containers",
+		"podman_registry_image_tags",
 	}
 	for _, name := range expectedDataSources {
 		if _, ok := p.DataSourcesMap[name]; !ok {

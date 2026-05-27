@@ -44,6 +44,21 @@ func dataSourcePodmanNetwork() *schema.Resource {
 				Elem:        &schema.Schema{Type: schema.TypeString},
 				Description: "Network-specific options.",
 			},
+			"containers": {
+				Type:        schema.TypeList,
+				Computed:    true,
+				Description: "Containers attached to this network.",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"container_id": {Type: schema.TypeString, Computed: true},
+						"name":         {Type: schema.TypeString, Computed: true},
+						"endpoint_id":  {Type: schema.TypeString, Computed: true},
+						"mac_address":  {Type: schema.TypeString, Computed: true},
+						"ipv4_address": {Type: schema.TypeString, Computed: true},
+						"ipv6_address": {Type: schema.TypeString, Computed: true},
+					},
+				},
+			},
 			"ipam_config": {
 				Type:        schema.TypeList,
 				Computed:    true,
@@ -101,6 +116,21 @@ func dataSourcePodmanNetworkRead(ctx context.Context, d *schema.ResourceData, me
 		return diag.FromErr(err)
 	}
 	if err := d.Set("options", net.Options); err != nil {
+		return diag.FromErr(err)
+	}
+
+	containers := make([]interface{}, 0, len(net.Containers))
+	for id, ep := range net.Containers {
+		containers = append(containers, map[string]interface{}{
+			"container_id": id,
+			"name":         ep.Name,
+			"endpoint_id":  ep.EndpointID,
+			"mac_address":  ep.MacAddress,
+			"ipv4_address": ep.IPv4Address,
+			"ipv6_address": ep.IPv6Address,
+		})
+	}
+	if err := d.Set("containers", containers); err != nil {
 		return diag.FromErr(err)
 	}
 

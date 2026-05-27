@@ -33,6 +33,13 @@ func resourcePodmanTag() *schema.Resource {
 				Computed:    true,
 				Description: "The ID of the source image.",
 			},
+			"tag_triggers": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				ForceNew:    true,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+				Description: "Re-tag the image when one of these tokens changes (e.g. a digest reference).",
+			},
 		},
 	}
 }

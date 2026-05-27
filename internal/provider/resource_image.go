@@ -10,10 +10,19 @@ import (
 	"path/filepath"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
+
+func strOrEmpty(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
 
 func resourcePodmanImage() *schema.Resource {
 	return &schema.Resource{
@@ -150,6 +159,82 @@ func resourcePodmanImage() *schema.Resource {
 							Type:        schema.TypeInt,
 							Optional:    true,
 							Description: "Total memory (memory + swap). Set -1 for unlimited swap.",
+						},
+						"cgroup_parent": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Cgroup parent for the build container.",
+						},
+						"cpu_set_mems": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Memory nodes (MEMs) in which to allow execution (NUMA).",
+						},
+						"pull_parent": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Description: "Always attempt to pull a newer version of the base image.",
+						},
+						"squash": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Description: "Squash newly built layers into a single new layer.",
+						},
+						"security_opt": {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Elem:        &schema.Schema{Type: schema.TypeString},
+							Description: "Security options for the build.",
+						},
+						"suppress_output": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Description: "Suppress the build output and print image ID on success.",
+						},
+						"remote_context": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "URL or git context for the build instead of a local path.",
+						},
+						"label": {
+							Type:        schema.TypeMap,
+							Optional:    true,
+							Elem:        &schema.Schema{Type: schema.TypeString},
+							Description: "Alias of `labels`.",
+						},
+						"ulimit": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"name": {Type: schema.TypeString, Required: true},
+									"hard": {Type: schema.TypeInt, Required: true},
+									"soft": {Type: schema.TypeInt, Required: true},
+								},
+							},
+							Description: "Ulimit options for the build container.",
+						},
+						"auth_config": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"host_name":      {Type: schema.TypeString, Required: true},
+									"user_name":      {Type: schema.TypeString, Optional: true},
+									"password":       {Type: schema.TypeString, Optional: true, Sensitive: true},
+									"auth":           {Type: schema.TypeString, Optional: true, Sensitive: true},
+									"email":          {Type: schema.TypeString, Optional: true},
+									"server_address": {Type: schema.TypeString, Optional: true},
+									"identity_token": {Type: schema.TypeString, Optional: true, Sensitive: true},
+									"registry_token": {Type: schema.TypeString, Optional: true, Sensitive: true},
+								},
+							},
+							Description: "Per-registry auth config used when pulling build base images.",
+						},
+						"build_log_file": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Local file path to which the build stream output is appended.",
 						},
 					},
 				},
@@ -302,17 +387,93 @@ func imageBuild(ctx context.Context, d *schema.ResourceData, config *ProviderCon
 		buildOpts.MemorySwap = int64(v.(int))
 	}
 
-	buildContext, err := createBuildContext(buildCtxPath)
-	if err != nil {
-		return diag.FromErr(fmt.Errorf("unable to create build context: %w", err))
+	if v, ok := buildConfig["cgroup_parent"]; ok && v.(string) != "" {
+		buildOpts.CgroupParent = v.(string)
 	}
-	defer buildContext.Close()
+	if v, ok := buildConfig["cpu_set_mems"]; ok && v.(string) != "" {
+		buildOpts.CPUSetMems = v.(string)
+	}
+	if v, ok := buildConfig["pull_parent"]; ok {
+		buildOpts.PullParent = v.(bool)
+	}
+	if v, ok := buildConfig["squash"]; ok {
+		buildOpts.Squash = v.(bool)
+	}
+	if v, ok := buildConfig["suppress_output"]; ok {
+		buildOpts.SuppressOutput = v.(bool)
+	}
+	if v, ok := buildConfig["security_opt"]; ok {
+		buildOpts.SecurityOpt = stringListToSlice(v)
+	}
+	if v, ok := buildConfig["remote_context"]; ok && v.(string) != "" {
+		buildOpts.RemoteContext = v.(string)
+	}
+	if v, ok := buildConfig["label"]; ok {
+		extra := mapStringInterfaceToStringString(v.(map[string]interface{}))
+		if buildOpts.Labels == nil {
+			buildOpts.Labels = make(map[string]string, len(extra))
+		}
+		for k, val := range extra {
+			buildOpts.Labels[k] = val
+		}
+	}
+	if v, ok := buildConfig["ulimit"]; ok {
+		for _, raw := range v.([]interface{}) {
+			u := raw.(map[string]interface{})
+			buildOpts.Ulimits = append(buildOpts.Ulimits, &container.Ulimit{
+				Name: u["name"].(string),
+				Hard: int64(u["hard"].(int)),
+				Soft: int64(u["soft"].(int)),
+			})
+		}
+	}
+	if v, ok := buildConfig["auth_config"]; ok {
+		buildOpts.AuthConfigs = make(map[string]registry.AuthConfig)
+		for _, raw := range v.([]interface{}) {
+			a := raw.(map[string]interface{})
+			host := a["host_name"].(string)
+			buildOpts.AuthConfigs[host] = registry.AuthConfig{
+				Username:      strOrEmpty(a["user_name"]),
+				Password:      strOrEmpty(a["password"]),
+				Auth:          strOrEmpty(a["auth"]),
+				Email:         strOrEmpty(a["email"]),
+				ServerAddress: strOrEmpty(a["server_address"]),
+				IdentityToken: strOrEmpty(a["identity_token"]),
+				RegistryToken: strOrEmpty(a["registry_token"]),
+			}
+		}
+	}
 
-	resp, err := cli.ImageBuild(ctx, buildContext, buildOpts)
+	var buildLogFile string
+	if v, ok := buildConfig["build_log_file"]; ok {
+		buildLogFile = v.(string)
+	}
+
+	// RemoteContext takes precedence over a local build context if both are set.
+	var buildContextReader io.Reader
+	if buildOpts.RemoteContext == "" {
+		bc, err := createBuildContext(buildCtxPath)
+		if err != nil {
+			return diag.FromErr(fmt.Errorf("unable to create build context: %w", err))
+		}
+		defer bc.Close()
+		buildContextReader = bc
+	}
+
+	resp, err := cli.ImageBuild(ctx, buildContextReader, buildOpts)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("unable to build image: %w", err))
 	}
 	defer resp.Body.Close()
+
+	var logFH io.WriteCloser
+	if buildLogFile != "" {
+		f, ferr := os.OpenFile(buildLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if ferr == nil {
+			logFH = f
+			defer logFH.Close()
+		}
+	}
 
 	type buildMessage struct {
 		Stream string `json:"stream"`
@@ -326,6 +487,9 @@ func imageBuild(ctx context.Context, d *schema.ResourceData, config *ProviderCon
 				break
 			}
 			return diag.FromErr(fmt.Errorf("error reading build output: %w", err))
+		}
+		if logFH != nil && msg.Stream != "" {
+			_, _ = logFH.Write([]byte(msg.Stream))
 		}
 		if msg.Error != "" {
 			return diag.FromErr(fmt.Errorf("build error: %s", msg.Error))

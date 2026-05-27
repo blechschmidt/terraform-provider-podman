@@ -48,6 +48,24 @@ func resourcePodmanRegistryImage() *schema.Resource {
 				},
 				Description: "A map of arbitrary strings that, when changed, will force the image to be re-pushed.",
 			},
+			"auth_config": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: "Per-resource registry auth (overrides provider-level registry_auth for this image).",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"address":         {Type: schema.TypeString, Required: true},
+						"user_name":       {Type: schema.TypeString, Optional: true},
+						"password":        {Type: schema.TypeString, Optional: true, Sensitive: true},
+						"auth":            {Type: schema.TypeString, Optional: true, Sensitive: true},
+						"email":           {Type: schema.TypeString, Optional: true},
+						"server_address":  {Type: schema.TypeString, Optional: true},
+						"identity_token":  {Type: schema.TypeString, Optional: true, Sensitive: true},
+						"registry_token":  {Type: schema.TypeString, Optional: true, Sensitive: true},
+					},
+				},
+			},
 			"sha256_digest": {
 				Type:        schema.TypeString,
 				Computed:    true,
@@ -182,6 +200,28 @@ func pushImage(ctx context.Context, config *ProviderConfig, imageName string) (s
 		}
 	}
 
+	// Podman's compat push doesn't always emit the Aux digest. Fall back to
+	// inspecting the local image for a RepoDigest matching the pushed registry.
+	if digest == "" {
+		if inspect, _, ierr := cli.ImageInspectWithRaw(ctx, imageName); ierr == nil {
+			registryHost := getRegistryFromImageName(imageName)
+			for _, rd := range inspect.RepoDigests {
+				if at := strings.Index(rd, "@"); at >= 0 {
+					if strings.Contains(rd[:at], registryHost) || strings.HasPrefix(rd, registryHost+"/") {
+						digest = rd[at+1:]
+						break
+					}
+				}
+			}
+			if digest == "" && len(inspect.RepoDigests) > 0 {
+				// Last-resort: take the first repo digest.
+				if at := strings.Index(inspect.RepoDigests[0], "@"); at >= 0 {
+					digest = inspect.RepoDigests[0][at+1:]
+				}
+			}
+		}
+	}
+
 	return digest, nil
 }
 
@@ -203,37 +243,45 @@ func deleteRegistryImage(config *ProviderConfig, imageName string, digest string
 		}
 	}
 
+	doRequest := func(scheme string) (*http.Response, error) {
+		url := fmt.Sprintf("%s://%s/v2/%s/manifests/%s", scheme, registryHost, repo, digest)
+		req, err := http.NewRequest("DELETE", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+		if auth, ok := config.RegistryAuth[registryHost]; ok && auth.Username != "" && auth.Password != "" {
+			req.SetBasicAuth(auth.Username, auth.Password)
+		}
+		httpClient := &http.Client{Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec
+		}}
+		return httpClient.Do(req)
+	}
+
 	scheme := "https"
 	if insecure {
 		scheme = "http"
 	}
-
-	url := fmt.Sprintf("%s://%s/v2/%s/manifests/%s", scheme, registryHost, repo, digest)
-
-	req, err := http.NewRequest("DELETE", url, nil)
+	resp, err := doRequest(scheme)
 	if err != nil {
-		return fmt.Errorf("failed to create delete request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-
-	if auth, ok := config.RegistryAuth[registryHost]; ok && auth.Username != "" && auth.Password != "" {
-		req.SetBasicAuth(auth.Username, auth.Password)
-	}
-
-	httpClient := &http.Client{}
-	if insecure {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		// Auto-retry with the opposite scheme if we hit a TLS/HTTP mismatch.
+		if scheme == "https" && strings.Contains(err.Error(), "http: server gave HTTP response to HTTPS client") {
+			resp, err = doRequest("http")
+		} else if scheme == "http" && strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") {
+			resp, err = doRequest("https")
 		}
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to delete image from registry: %w", err)
+		if err != nil {
+			return fmt.Errorf("failed to delete image from registry: %w", err)
+		}
 	}
 	defer resp.Body.Close()
 
+	// 405 Method Not Allowed is common — many registries (incl. registry:2 by
+	// default) disable deletes. Treat as a soft success on destroy.
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil
+	}
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("registry returned status %d: %s", resp.StatusCode, string(body))

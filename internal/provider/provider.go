@@ -52,6 +52,12 @@ func New() *schema.Provider {
 				Elem:        &schema.Schema{Type: schema.TypeString},
 				Description: "Additional SSH options for ssh:// protocol.",
 			},
+			"disable_podman_daemon_check": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "If true, the provider will not check the daemon connection on configuration (useful for plan-only or CI).",
+			},
 			"registry_auth": {
 				Type:     schema.TypeSet,
 				Optional: true,
@@ -114,6 +120,8 @@ func New() *schema.Provider {
 			"podman_registry_image":           dataSourcePodmanRegistryImage(),
 			"podman_logs":                     dataSourcePodmanLogs(),
 			"podman_registry_image_manifests": dataSourcePodmanRegistryImageManifests(),
+			"podman_containers":               dataSourcePodmanContainers(),
+			"podman_registry_image_tags":      dataSourcePodmanRegistryImageTags(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}

@@ -39,26 +39,19 @@ func dataSourcePodmanRegistryImage() *schema.Resource {
 
 func dataSourcePodmanRegistryImageRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	config := getClient(meta)
-	cli := config.Client
-
 	name := d.Get("name").(string)
+	insecure := d.Get("insecure_skip_verify").(bool)
 
-	authStr, err := getRegistryAuth(config, name)
-	if err != nil {
-		return diag.Errorf("error getting registry auth for %s: %s", name, err)
-	}
-
-	dist, err := cli.DistributionInspect(ctx, name, authStr)
+	host, repo, ref := registryHostAndRepo(name)
+	basicAuth := resolveBasicAuthForImage(config, name)
+	m, err := fetchRegistryManifest(ctx, host, repo, ref, basicAuth, insecure)
 	if err != nil {
 		return diag.Errorf("error inspecting registry image %s: %s", name, err)
 	}
 
-	digest := string(dist.Descriptor.Digest)
-
 	d.SetId(name)
-	if err := d.Set("sha256_digest", digest); err != nil {
+	if err := d.Set("sha256_digest", m.Digest); err != nil {
 		return diag.FromErr(err)
 	}
-
 	return nil
 }

@@ -2,10 +2,8 @@ package provider
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 
-	"github.com/docker/docker/api/types/registry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
@@ -92,35 +90,54 @@ func dataSourcePodmanRegistryImageManifests() *schema.Resource {
 
 func dataSourcePodmanRegistryImageManifestsRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	config := getClient(meta)
-	cli := config.Client
-
 	name := d.Get("name").(string)
+	insecure := d.Get("insecure_skip_verify").(bool)
 
-	authStr, err := resolveManifestsAuth(config, d, name)
-	if err != nil {
-		return diag.Errorf("error getting registry auth for %s: %s", name, err)
-	}
-
-	dist, err := cli.DistributionInspect(ctx, name, authStr)
+	basicAuth := resolveBasicAuthForManifests(config, d, name)
+	host, repo, ref := registryHostAndRepo(name)
+	m, err := fetchRegistryManifest(ctx, host, repo, ref, basicAuth, insecure)
 	if err != nil {
 		return diag.Errorf("error inspecting registry image %s: %s", name, err)
 	}
 
 	d.SetId(name)
 
-	manifests := make([]interface{}, 0, len(dist.Platforms))
-	for i, platform := range dist.Platforms {
-		m := map[string]interface{}{
-			"architecture":  platform.Architecture,
-			"media_type":    dist.Descriptor.MediaType,
-			"os":            platform.OS,
-			"sha256_digest": string(dist.Descriptor.Digest),
+	// Try to parse as an index/manifest list. Fall back to a single entry
+	// (single-platform manifest) if it doesn't parse as a list.
+	var index struct {
+		Manifests []struct {
+			Digest    string `json:"digest"`
+			MediaType string `json:"mediaType"`
+			Platform  struct {
+				Architecture string `json:"architecture"`
+				OS           string `json:"os"`
+			} `json:"platform"`
+		} `json:"manifests"`
+	}
+	manifests := make([]interface{}, 0)
+	if err := json.Unmarshal(m.Body, &index); err == nil && len(index.Manifests) > 0 {
+		for _, e := range index.Manifests {
+			manifests = append(manifests, map[string]interface{}{
+				"architecture":  e.Platform.Architecture,
+				"media_type":    e.MediaType,
+				"os":            e.Platform.OS,
+				"sha256_digest": e.Digest,
+			})
 		}
-		// If there are multiple platforms, each may have a distinct digest.
-		// The distribution inspect API returns a single descriptor but multiple platforms.
-		// We use the top-level digest; individual platform digests are not exposed.
-		_ = i
-		manifests = append(manifests, m)
+	} else {
+		// Single manifest — try to read the architecture/os from the config blob via
+		// the manifest's `config.architecture`/`os` if present.
+		var single struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}
+		_ = json.Unmarshal(m.Body, &single)
+		manifests = append(manifests, map[string]interface{}{
+			"architecture":  single.Architecture,
+			"media_type":    m.ContentType,
+			"os":            single.OS,
+			"sha256_digest": m.Digest,
+		})
 	}
 	if err := d.Set("manifests", manifests); err != nil {
 		return diag.FromErr(err)
@@ -129,25 +146,16 @@ func dataSourcePodmanRegistryImageManifestsRead(ctx context.Context, d *schema.R
 	return nil
 }
 
-// resolveManifestsAuth determines the auth string to use for the manifests data source.
-// If an auth_config block is provided, it takes precedence over the provider-level registry_auth.
-func resolveManifestsAuth(config *ProviderConfig, d *schema.ResourceData, imageName string) (string, error) {
+// resolveBasicAuthForManifests returns the HTTP Basic auth string to use for
+// the manifests data source. If an auth_config block is provided, it takes
+// precedence over the provider-level registry_auth.
+func resolveBasicAuthForManifests(config *ProviderConfig, d *schema.ResourceData, imageName string) string {
 	if v, ok := d.GetOk("auth_config"); ok {
 		authList := v.([]interface{})
 		if len(authList) > 0 && authList[0] != nil {
 			authMap := authList[0].(map[string]interface{})
-			authConfig := registry.AuthConfig{
-				Username:      authMap["username"].(string),
-				Password:      authMap["password"].(string),
-				ServerAddress: authMap["address"].(string),
-			}
-			encoded, err := json.Marshal(authConfig)
-			if err != nil {
-				return "", err
-			}
-			return base64.URLEncoding.EncodeToString(encoded), nil
+			return buildBasicAuthHeader(authMap["username"].(string), authMap["password"].(string))
 		}
 	}
-
-	return getRegistryAuth(config, imageName)
+	return resolveBasicAuthForImage(config, imageName)
 }

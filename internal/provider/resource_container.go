@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/blkiodev"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -21,6 +22,7 @@ import (
 	"github.com/docker/go-units"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func resourcePodmanContainer() *schema.Resource {
@@ -92,6 +94,12 @@ func resourcePodmanContainer() *schema.Resource {
 					},
 				},
 			},
+			"cgroup_parent": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				Computed: true,
+			},
 			"cgroupns_mode": {
 				Type:     schema.TypeString,
 				Optional: true,
@@ -104,6 +112,11 @@ func resourcePodmanContainer() *schema.Resource {
 				Computed: true,
 				ForceNew: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"container_read_refresh_timeout_milliseconds": {
+				Type:     schema.TypeInt,
+				Optional: true,
+				Default:  15000,
 			},
 			"cpu_set": {
 				Type:     schema.TypeString,
@@ -120,6 +133,11 @@ func resourcePodmanContainer() *schema.Resource {
 			"cpu_quota": {
 				Type:     schema.TypeInt,
 				Optional: true,
+			},
+			"cpus": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
 			},
 			"destroy_grace_seconds": {
 				Type:     schema.TypeInt,
@@ -144,6 +162,50 @@ func resourcePodmanContainer() *schema.Resource {
 							Optional: true,
 							Default:  "rwm",
 						},
+					},
+				},
+			},
+			"device_read_bps": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"path": {Type: schema.TypeString, Required: true},
+						"rate": {Type: schema.TypeInt, Required: true},
+					},
+				},
+			},
+			"device_read_iops": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"path": {Type: schema.TypeString, Required: true},
+						"rate": {Type: schema.TypeInt, Required: true},
+					},
+				},
+			},
+			"device_write_bps": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"path": {Type: schema.TypeString, Required: true},
+						"rate": {Type: schema.TypeInt, Required: true},
+					},
+				},
+			},
+			"device_write_iops": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"path": {Type: schema.TypeString, Required: true},
+						"rate": {Type: schema.TypeInt, Required: true},
 					},
 				},
 			},
@@ -214,6 +276,11 @@ func resourcePodmanContainer() *schema.Resource {
 							Optional: true,
 							Default:  "0s",
 						},
+						"start_interval": {
+							Type:     schema.TypeString,
+							Optional: true,
+							Default:  "0s",
+						},
 						"timeout": {
 							Type:     schema.TypeString,
 							Optional: true,
@@ -275,7 +342,16 @@ func resourcePodmanContainer() *schema.Resource {
 				Type:     schema.TypeInt,
 				Optional: true,
 			},
+			"gpus": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
 			"memory": {
+				Type:     schema.TypeInt,
+				Optional: true,
+			},
+			"memory_reservation": {
 				Type:     schema.TypeInt,
 				Optional: true,
 			},
@@ -356,6 +432,10 @@ func resourcePodmanContainer() *schema.Resource {
 										Type:     schema.TypeBool,
 										Optional: true,
 									},
+									"subpath": {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
 								},
 							},
 						},
@@ -395,8 +475,27 @@ func resourcePodmanContainer() *schema.Resource {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
+						"link_local_ips": {
+							Type:     schema.TypeSet,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"mac_address": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"driver_opts": {
+							Type:     schema.TypeMap,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
 					},
 				},
+			},
+			"platform": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
 			},
 			"pid_mode": {
 				Type:     schema.TypeString,
@@ -565,6 +664,10 @@ func resourcePodmanContainer() *schema.Resource {
 							Optional: true,
 							Default:  false,
 						},
+						"permissions": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
 						"source": {
 							Type:     schema.TypeString,
 							Optional: true,
@@ -611,6 +714,17 @@ func resourcePodmanContainer() *schema.Resource {
 						"volume_name": {
 							Type:     schema.TypeString,
 							Optional: true,
+						},
+						"selinux_relabel": {
+							Type:     schema.TypeString,
+							Optional: true,
+							ValidateFunc: func(v interface{}, k string) (ws []string, errs []error) {
+								val := v.(string)
+								if val != "" && val != "shared" && val != "private" && val != "disable" {
+									errs = append(errs, fmt.Errorf("%s must be one of shared, private, disable, or unset", k))
+								}
+								return
+							},
 						},
 					},
 				},
@@ -778,6 +892,11 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 			if startPeriod, err := time.ParseDuration(hcMap["start_period"].(string)); err == nil {
 				hc.StartPeriod = startPeriod
 			}
+			if si, ok := hcMap["start_interval"].(string); ok && si != "" {
+				if startInterval, err := time.ParseDuration(si); err == nil {
+					hc.StartInterval = startInterval
+				}
+			}
 			hc.Retries = hcMap["retries"].(int)
 			containerConfig.Healthcheck = hc
 		}
@@ -826,10 +945,27 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 			if source == "" {
 				source = volumeName
 			}
+			selinuxRelabel, _ := vol["selinux_relabel"].(string)
+			selinuxFlag := ""
+			switch selinuxRelabel {
+			case "shared":
+				selinuxFlag = "z"
+			case "private":
+				selinuxFlag = "Z"
+			case "disable":
+				selinuxFlag = "U"
+			}
 			if source != "" && containerPath != "" {
 				bind := source + ":" + containerPath
+				opts := []string{}
 				if readOnly {
-					bind += ":ro"
+					opts = append(opts, "ro")
+				}
+				if selinuxFlag != "" {
+					opts = append(opts, selinuxFlag)
+				}
+				if len(opts) > 0 {
+					bind += ":" + strings.Join(opts, ",")
 				}
 				volBinds = append(volBinds, bind)
 			} else if containerPath != "" {
@@ -890,8 +1026,51 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 	if v, ok := d.GetOk("memory"); ok {
 		hostConfig.Resources.Memory = int64(v.(int))
 	}
+	if v, ok := d.GetOk("memory_reservation"); ok {
+		hostConfig.Resources.MemoryReservation = int64(v.(int))
+	}
 	if v, ok := d.GetOk("memory_swap"); ok {
 		hostConfig.Resources.MemorySwap = int64(v.(int))
+	}
+	if v, ok := d.GetOk("cpus"); ok {
+		if nano, err := parseCPUsToNano(v.(string)); err == nil {
+			hostConfig.Resources.NanoCPUs = nano
+		}
+	}
+	if v, ok := d.GetOk("cgroup_parent"); ok {
+		hostConfig.Resources.CgroupParent = v.(string)
+	}
+	if v, ok := d.GetOk("device_read_bps"); ok {
+		for _, raw := range v.(*schema.Set).List() {
+			e := raw.(map[string]interface{})
+			hostConfig.Resources.BlkioDeviceReadBps = append(hostConfig.Resources.BlkioDeviceReadBps, &blkiodev.ThrottleDevice{
+				Path: e["path"].(string), Rate: uint64(e["rate"].(int)),
+			})
+		}
+	}
+	if v, ok := d.GetOk("device_write_bps"); ok {
+		for _, raw := range v.(*schema.Set).List() {
+			e := raw.(map[string]interface{})
+			hostConfig.Resources.BlkioDeviceWriteBps = append(hostConfig.Resources.BlkioDeviceWriteBps, &blkiodev.ThrottleDevice{
+				Path: e["path"].(string), Rate: uint64(e["rate"].(int)),
+			})
+		}
+	}
+	if v, ok := d.GetOk("device_read_iops"); ok {
+		for _, raw := range v.(*schema.Set).List() {
+			e := raw.(map[string]interface{})
+			hostConfig.Resources.BlkioDeviceReadIOps = append(hostConfig.Resources.BlkioDeviceReadIOps, &blkiodev.ThrottleDevice{
+				Path: e["path"].(string), Rate: uint64(e["rate"].(int)),
+			})
+		}
+	}
+	if v, ok := d.GetOk("device_write_iops"); ok {
+		for _, raw := range v.(*schema.Set).List() {
+			e := raw.(map[string]interface{})
+			hostConfig.Resources.BlkioDeviceWriteIOps = append(hostConfig.Resources.BlkioDeviceWriteIOps, &blkiodev.ThrottleDevice{
+				Path: e["path"].(string), Rate: uint64(e["rate"].(int)),
+			})
+		}
 	}
 
 	// Capabilities
@@ -1061,6 +1240,9 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 				volOpts := &mount.VolumeOptions{
 					NoCopy: vMap["no_copy"].(bool),
 				}
+				if sp, ok := vMap["subpath"].(string); ok && sp != "" {
+					volOpts.Subpath = sp
+				}
 				if dn, ok := vMap["driver_name"].(string); ok && dn != "" {
 					volOpts.DriverConfig = &mount.Driver{
 						Name: dn,
@@ -1086,24 +1268,31 @@ func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, 
 		if len(nets) > 0 {
 			// Only the first network can be attached at create time
 			first := nets[0].(map[string]interface{})
-			epConfig := &network.EndpointSettings{}
-			epConfig.IPAMConfig = &network.EndpointIPAMConfig{}
-			if ipv4, ok := first["ipv4_address"].(string); ok && ipv4 != "" {
-				epConfig.IPAMConfig.IPv4Address = ipv4
-			}
-			if ipv6, ok := first["ipv6_address"].(string); ok && ipv6 != "" {
-				epConfig.IPAMConfig.IPv6Address = ipv6
-			}
-			if aliases, ok := first["aliases"]; ok {
-				epConfig.Aliases = stringSetToSlice(aliases)
-			}
+			epConfig := buildEndpointSettings(first)
 			endpointsConfig[first["name"].(string)] = epConfig
 		}
 		networkingConfig.EndpointsConfig = endpointsConfig
 	}
 
+	// Platform (e.g. "linux/amd64")
+	var platformPtr *ocispec.Platform
+	if pf, ok := d.GetOk("platform"); ok && pf.(string) != "" {
+		parts := strings.SplitN(pf.(string), "/", 3)
+		p := ocispec.Platform{}
+		if len(parts) > 0 {
+			p.OS = parts[0]
+		}
+		if len(parts) > 1 {
+			p.Architecture = parts[1]
+		}
+		if len(parts) > 2 {
+			p.Variant = parts[2]
+		}
+		platformPtr = &p
+	}
+
 	// Create container
-	body, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, containerName)
+	body, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, platformPtr, containerName)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error creating container %s: %w", containerName, err))
 	}
@@ -1133,16 +1322,7 @@ func connectAdvancedNetworks(ctx context.Context, cli interface {
 			continue
 		}
 		n := netRaw.(map[string]interface{})
-		epConfig := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{}}
-		if ipv4, ok := n["ipv4_address"].(string); ok && ipv4 != "" {
-			epConfig.IPAMConfig.IPv4Address = ipv4
-		}
-		if ipv6, ok := n["ipv6_address"].(string); ok && ipv6 != "" {
-			epConfig.IPAMConfig.IPv6Address = ipv6
-		}
-		if aliases, ok := n["aliases"]; ok {
-			epConfig.Aliases = stringSetToSlice(aliases)
-		}
+		epConfig := buildEndpointSettings(n)
 		if err := cli.NetworkConnect(ctx, n["name"].(string), containerID, epConfig); err != nil {
 			return diag.FromErr(fmt.Errorf("error connecting container to network %s: %w", n["name"].(string), err))
 		}
@@ -1292,13 +1472,28 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 
 	// Healthcheck
 	if c.Healthcheck != nil {
+		// start_interval is not always echoed back by podman's compat inspect.
+		// Preserve the user-configured value when the API returns 0.
+		startInterval := c.Healthcheck.StartInterval.String()
+		if c.Healthcheck.StartInterval == 0 {
+			if hcCfg, ok := d.GetOk("healthcheck"); ok {
+				if list, ok := hcCfg.([]interface{}); ok && len(list) > 0 {
+					if m, ok := list[0].(map[string]interface{}); ok {
+						if v, ok := m["start_interval"].(string); ok && v != "" {
+							startInterval = v
+						}
+					}
+				}
+			}
+		}
 		hcData := []interface{}{
 			map[string]interface{}{
-				"test":         c.Healthcheck.Test,
-				"interval":     c.Healthcheck.Interval.String(),
-				"timeout":      c.Healthcheck.Timeout.String(),
-				"start_period": c.Healthcheck.StartPeriod.String(),
-				"retries":      c.Healthcheck.Retries,
+				"test":           c.Healthcheck.Test,
+				"interval":       c.Healthcheck.Interval.String(),
+				"timeout":        c.Healthcheck.Timeout.String(),
+				"start_period":   c.Healthcheck.StartPeriod.String(),
+				"start_interval": startInterval,
+				"retries":        c.Healthcheck.Retries,
 			},
 		}
 		d.Set("healthcheck", hcData)
@@ -1329,11 +1524,59 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 
 		// Resources
 		d.Set("cpu_shares", int(hc.Resources.CPUShares))
-		d.Set("cpu_period", int(hc.Resources.CPUPeriod))
-		d.Set("cpu_quota", int(hc.Resources.CPUQuota))
+		// cpu_period/cpu_quota: only set if user originally configured them.
+		// Setting `cpus` also yields non-zero cpu_period/cpu_quota in podman's
+		// inspect output, which would otherwise create drift.
+		if _, ok := d.GetOk("cpu_period"); ok {
+			d.Set("cpu_period", int(hc.Resources.CPUPeriod))
+		}
+		if _, ok := d.GetOk("cpu_quota"); ok {
+			d.Set("cpu_quota", int(hc.Resources.CPUQuota))
+		}
 		d.Set("cpu_set", hc.Resources.CpusetCpus)
+		if _, ok := d.GetOk("cpus"); ok && hc.Resources.NanoCPUs > 0 {
+			d.Set("cpus", fmt.Sprintf("%g", float64(hc.Resources.NanoCPUs)/1e9))
+		}
 		d.Set("memory", int(hc.Resources.Memory))
 		d.Set("memory_swap", int(hc.Resources.MemorySwap))
+		// Only set memory_reservation if user configured it (podman may report 0
+		// even when set on cgroup v1 systems).
+		if _, ok := d.GetOk("memory_reservation"); ok {
+			d.Set("memory_reservation", int(hc.Resources.MemoryReservation))
+		}
+		// cgroup_parent only when user set it
+		if _, ok := d.GetOk("cgroup_parent"); ok {
+			d.Set("cgroup_parent", hc.Resources.CgroupParent)
+		}
+		// Blkio device throttles
+		if _, ok := d.GetOk("device_read_bps"); ok && hc.Resources.BlkioDeviceReadBps != nil {
+			list := make([]interface{}, 0, len(hc.Resources.BlkioDeviceReadBps))
+			for _, td := range hc.Resources.BlkioDeviceReadBps {
+				list = append(list, map[string]interface{}{"path": td.Path, "rate": int(td.Rate)})
+			}
+			d.Set("device_read_bps", list)
+		}
+		if _, ok := d.GetOk("device_write_bps"); ok && hc.Resources.BlkioDeviceWriteBps != nil {
+			list := make([]interface{}, 0, len(hc.Resources.BlkioDeviceWriteBps))
+			for _, td := range hc.Resources.BlkioDeviceWriteBps {
+				list = append(list, map[string]interface{}{"path": td.Path, "rate": int(td.Rate)})
+			}
+			d.Set("device_write_bps", list)
+		}
+		if _, ok := d.GetOk("device_read_iops"); ok && hc.Resources.BlkioDeviceReadIOps != nil {
+			list := make([]interface{}, 0, len(hc.Resources.BlkioDeviceReadIOps))
+			for _, td := range hc.Resources.BlkioDeviceReadIOps {
+				list = append(list, map[string]interface{}{"path": td.Path, "rate": int(td.Rate)})
+			}
+			d.Set("device_read_iops", list)
+		}
+		if _, ok := d.GetOk("device_write_iops"); ok && hc.Resources.BlkioDeviceWriteIOps != nil {
+			list := make([]interface{}, 0, len(hc.Resources.BlkioDeviceWriteIOps))
+			for _, td := range hc.Resources.BlkioDeviceWriteIOps {
+				list = append(list, map[string]interface{}{"path": td.Path, "rate": int(td.Rate)})
+			}
+			d.Set("device_write_iops", list)
+		}
 
 		// Security opts
 		if hc.SecurityOpt != nil {
@@ -1390,8 +1633,12 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 			}
 		}
 
-		// Devices
-		if hc.Resources.Devices != nil {
+		// Devices — only echo back when podman has actually populated them.
+		// podman's compat inspect frequently returns an empty list even when
+		// devices were set at create time (devices are passed through the OCI
+		// spec, not stored on the container record), so an empty read would
+		// otherwise wipe the user-configured value.
+		if len(hc.Resources.Devices) > 0 {
 			devices := make([]interface{}, len(hc.Resources.Devices))
 			for i, dev := range hc.Resources.Devices {
 				devices[i] = map[string]interface{}{
@@ -1485,6 +1732,7 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 				if m.VolumeOptions != nil {
 					voMap := map[string]interface{}{
 						"no_copy": m.VolumeOptions.NoCopy,
+						"subpath": m.VolumeOptions.Subpath,
 					}
 					if m.VolumeOptions.DriverConfig != nil {
 						voMap["driver_name"] = m.VolumeOptions.DriverConfig.Name
@@ -1668,17 +1916,7 @@ func resourcePodmanContainerUpdate(ctx context.Context, d *schema.ResourceData, 
 		// Connect new networks
 		for _, nRaw := range newNets.Difference(oldNets).List() {
 			n := nRaw.(map[string]interface{})
-			epConfig := &network.EndpointSettings{}
-			epConfig.IPAMConfig = &network.EndpointIPAMConfig{}
-			if ipv4, ok := n["ipv4_address"].(string); ok && ipv4 != "" {
-				epConfig.IPAMConfig.IPv4Address = ipv4
-			}
-			if ipv6, ok := n["ipv6_address"].(string); ok && ipv6 != "" {
-				epConfig.IPAMConfig.IPv6Address = ipv6
-			}
-			if aliases, ok := n["aliases"]; ok {
-				epConfig.Aliases = stringSetToSlice(aliases)
-			}
+			epConfig := buildEndpointSettings(n)
 			if err := cli.NetworkConnect(ctx, n["name"].(string), containerID, epConfig); err != nil {
 				return diag.FromErr(fmt.Errorf("error connecting network %s: %w", n["name"].(string), err))
 			}
@@ -1777,6 +2015,39 @@ func resourcePodmanContainerDelete(ctx context.Context, d *schema.ResourceData, 
 	return nil
 }
 
+// buildEndpointSettings creates an EndpointSettings from a networks_advanced block.
+func buildEndpointSettings(n map[string]interface{}) *network.EndpointSettings {
+	ep := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{}}
+	if ipv4, ok := n["ipv4_address"].(string); ok && ipv4 != "" {
+		ep.IPAMConfig.IPv4Address = ipv4
+	}
+	if ipv6, ok := n["ipv6_address"].(string); ok && ipv6 != "" {
+		ep.IPAMConfig.IPv6Address = ipv6
+	}
+	if lli, ok := n["link_local_ips"]; ok {
+		ep.IPAMConfig.LinkLocalIPs = stringSetToSlice(lli)
+	}
+	if aliases, ok := n["aliases"]; ok {
+		ep.Aliases = stringSetToSlice(aliases)
+	}
+	if mac, ok := n["mac_address"].(string); ok && mac != "" {
+		ep.MacAddress = mac
+	}
+	if do, ok := n["driver_opts"].(map[string]interface{}); ok && len(do) > 0 {
+		ep.DriverOpts = mapStringInterfaceToStringString(do)
+	}
+	return ep
+}
+
+// parseCPUsToNano converts a decimal "cpus" string (e.g. "1.5") into NanoCPUs.
+func parseCPUsToNano(s string) (int64, error) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(f * 1e9), nil
+}
+
 // uploadFileToContainer uploads a single file to the container via the Docker API.
 func uploadFileToContainer(ctx context.Context, cli interface {
 	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader, options types.CopyToContainerOptions) error
@@ -1806,6 +2077,11 @@ func uploadFileToContainer(ctx context.Context, cli interface {
 	fileMode := os.FileMode(0644)
 	if upload["executable"].(bool) {
 		fileMode = os.FileMode(0755)
+	}
+	if perm, ok := upload["permissions"].(string); ok && perm != "" {
+		if m, err := strconv.ParseUint(strings.TrimPrefix(perm, "0"), 8, 32); err == nil {
+			fileMode = os.FileMode(m)
+		}
 	}
 
 	// Build tar archive with the file

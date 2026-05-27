@@ -27,6 +27,15 @@ jobs:
           sudo apt-get install -y podman
           podman --version
 
+      - name: Configure insecure local test registry
+        run: |
+          mkdir -p ~/.config/containers
+          cat > ~/.config/containers/registries.conf <<'EOF'
+          [[registry]]
+          location = "localhost:5555"
+          insecure = true
+          EOF
+
       - name: Start Podman socket
         run: |
           systemctl --user start podman.socket
@@ -35,6 +44,8 @@ jobs:
       - name: Pull test images
         run: |
           podman pull quay.io/podman/stable:latest
+          podman pull docker.io/library/alpine:3.20
+          podman pull docker.io/library/registry:2
 
       - name: Run acceptance tests
         run: |
