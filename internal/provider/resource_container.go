@@ -1991,6 +1991,13 @@ func resourcePodmanContainerUpdate(ctx context.Context, d *schema.ResourceData, 
 		for _, nRaw := range oldNets.Difference(newNets).List() {
 			n := nRaw.(map[string]interface{})
 			if err := cli.NetworkDisconnect(ctx, n["name"].(string), containerID, false); err != nil {
+				// The network may already be gone — e.g. it was replaced and the
+				// old one destroyed before this disconnect runs — in which case the
+				// container is effectively already disconnected. Tolerate that.
+				msg := strings.ToLower(err.Error())
+				if strings.Contains(msg, "not found") || strings.Contains(msg, "no such network") || strings.Contains(msg, "not connected") {
+					continue
+				}
 				return diag.FromErr(fmt.Errorf("error disconnecting network %s: %w", n["name"].(string), err))
 			}
 		}
