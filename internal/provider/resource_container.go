@@ -26,7 +26,7 @@ import (
 )
 
 func resourcePodmanContainer() *schema.Resource {
-	return &schema.Resource{
+	r := &schema.Resource{
 		CreateContext: resourcePodmanContainerCreate,
 		ReadContext:   resourcePodmanContainerRead,
 		UpdateContext: resourcePodmanContainerUpdate,
@@ -801,6 +801,50 @@ func resourcePodmanContainer() *schema.Resource {
 			},
 		},
 	}
+
+	// terraform-plugin-sdk v2 only propagates a block's ForceNew to the element
+	// count and to primitive Elem schemas, not to the leaf attributes of an Elem
+	// that is a *schema.Resource. As a result, changing a nested value of a
+	// ForceNew object-block (e.g. a port number or a volume path) without
+	// changing the element count would be planned as an in-place update instead
+	// of the intended replacement. Re-assert ForceNew on every nested attribute
+	// of those blocks so such a change correctly recreates the container.
+	for _, key := range forceNewContainerBlocks {
+		if blk, ok := r.Schema[key]; ok {
+			forceNewLeaves(blk)
+		}
+	}
+
+	return r
+}
+
+// forceNewLeaves recursively marks a schema and all of its nested attributes as
+// ForceNew. It works around terraform-plugin-sdk v2 not propagating a block's
+// ForceNew into the leaves of an Elem that is a *schema.Resource.
+func forceNewLeaves(s *schema.Schema) {
+	s.ForceNew = true
+	if res, ok := s.Elem.(*schema.Resource); ok {
+		for _, sub := range res.Schema {
+			forceNewLeaves(sub)
+		}
+	}
+}
+
+// forceNewContainerBlocks lists the ForceNew block attributes (TypeList/TypeSet
+// whose Elem is a *schema.Resource) whose nested leaves must also be marked
+// ForceNew; see forceNewLeaves and the loop in resourcePodmanContainer.
+var forceNewContainerBlocks = []string{
+	"capabilities",
+	"devices",
+	"device_read_bps",
+	"device_read_iops",
+	"device_write_bps",
+	"device_write_iops",
+	"host",
+	"mounts",
+	"ports",
+	"upload",
+	"volumes",
 }
 
 func resourcePodmanContainerCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
