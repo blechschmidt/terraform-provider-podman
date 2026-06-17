@@ -30,6 +30,7 @@ func resourcePodmanImage() *schema.Resource {
 		ReadContext:   resourcePodmanImageRead,
 		UpdateContext: resourcePodmanImageUpdate,
 		DeleteContext: resourcePodmanImageDelete,
+		CustomizeDiff: resourcePodmanImageCustomizeDiff,
 
 		Schema: map[string]*schema.Schema{
 			"name": {
@@ -571,11 +572,30 @@ func resourcePodmanImageRead(ctx context.Context, d *schema.ResourceData, meta i
 	return nil
 }
 
+// resourcePodmanImageCustomizeDiff marks the image's computed outputs as
+// recomputed when the image name changes. Without this, image_id and
+// repo_digest keep their old values in the plan, so resources that depend on
+// them (e.g. a container's image) are not planned for replacement even though
+// the underlying image is about to change.
+func resourcePodmanImageCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	if d.HasChange("name") {
+		if err := d.SetNewComputed("image_id"); err != nil {
+			return err
+		}
+		if err := d.SetNewComputed("repo_digest"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func resourcePodmanImageUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	config := getClient(meta)
 	imageName := d.Get("name").(string)
 
-	if d.HasChange("triggers") || d.HasChange("build") {
+	// A name change points the resource at a different image, so it must be
+	// (re-)pulled just like an explicit triggers/build change.
+	if d.HasChange("triggers") || d.HasChange("build") || d.HasChange("name") {
 		if v, ok := d.GetOk("build"); ok {
 			buildList := v.([]interface{})
 			buildConfig := buildList[0].(map[string]interface{})
