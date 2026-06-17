@@ -215,3 +215,57 @@ resource "podman_container" "other" {
 		configA: cfg("/data"), configB: cfg("/data2"),
 	})
 }
+
+func TestAccDepVolumeBindMountSourceChangeRecreatesContainer(t *testing.T) {
+	cname := randDepName("bindm")
+	cfg := func(src string) string {
+		return fmt.Sprintf(`
+resource "podman_container" "test" {
+  name  = %q
+  image = %q
+  start = false
+  mounts {
+    type   = "bind"
+    source = %q
+    target = "/data"
+  }
+}
+`, cname, depImage, src)
+	}
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "bind mount source", recreate: true,
+		configA: cfg("/tmp/tf-dep-bind-a"), configB: cfg("/tmp/tf-dep-bind-b"),
+	})
+}
+
+func TestAccDepVolumeTwoMountsOneTargetChangeRecreatesContainer(t *testing.T) {
+	v1 := randDepName("2mv1")
+	v2 := randDepName("2mv2")
+	cname := randDepName("2mc")
+	cfg := func(target2 string) string {
+		return fmt.Sprintf(`
+resource "podman_volume" "v1" { name = %q }
+resource "podman_volume" "v2" { name = %q }
+
+resource "podman_container" "test" {
+  name  = %q
+  image = %q
+  start = false
+  mounts {
+    type   = "volume"
+    source = podman_volume.v1.name
+    target = "/data1"
+  }
+  mounts {
+    type   = "volume"
+    source = podman_volume.v2.name
+    target = %q
+  }
+}
+`, v1, v2, cname, depImage, target2)
+	}
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "two mounts one target", recreate: true,
+		configA: cfg("/data2"), configB: cfg("/data2-new"),
+	})
+}

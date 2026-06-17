@@ -171,3 +171,35 @@ resource "podman_container" "other" {
 		configB: cfg(randDepName("nshare-b")),
 	})
 }
+
+func TestAccDepContainerLeaveNetworkInPlace(t *testing.T) {
+	net := randDepName("nleave")
+	cname := randDepName("nleavec")
+	withNet := hclNetContainer(net, net, cname, `aliases = ["app"]`)
+	withoutNet := fmt.Sprintf(`
+resource "podman_network" "n" {
+  name = %q
+}
+
+resource "podman_container" "test" {
+  name  = %q
+  image = %q
+  start = false
+}
+`, net, cname, depImage)
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "leave network", recreate: false,
+		configA: withNet,
+		configB: withoutNet,
+	})
+}
+
+func TestAccDepContainerNetworkMultiAliasInPlace(t *testing.T) {
+	net := randDepName("nmalias")
+	cname := randDepName("nmaliasc")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "network multi-alias", recreate: false,
+		configA: hclNetContainer(net, net, cname, `aliases = ["app"]`),
+		configB: hclNetContainer(net, net, cname, `aliases = ["app", "web"]`),
+	})
+}

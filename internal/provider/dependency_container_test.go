@@ -207,3 +207,59 @@ func TestAccDepContainerCpuSharesChangeInPlace(t *testing.T) {
 		configB: hclC(n, `cpu_shares = 1024`),
 	})
 }
+
+func TestAccDepContainerCpuQuotaChangeInPlace(t *testing.T) {
+	n := randDepName("cpuq")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "cpu_quota", recreate: false,
+		configA: hclC(n, "cpu_period = 100000\n  cpu_quota = 50000"),
+		configB: hclC(n, "cpu_period = 100000\n  cpu_quota = 75000"),
+	})
+}
+
+func TestAccDepContainerMaxRetryChangeInPlace(t *testing.T) {
+	n := randDepName("retry")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "max_retry_count", recreate: false,
+		configA: hclC(n, "restart         = \"on-failure\"\n  max_retry_count = 2"),
+		configB: hclC(n, "restart         = \"on-failure\"\n  max_retry_count = 5"),
+	})
+}
+
+func TestAccDepContainerMemorySwapChangeInPlace(t *testing.T) {
+	n := randDepName("memsw")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "memory_swap", recreate: false,
+		configA: hclC(n, "memory      = 134217728\n  memory_swap = 268435456"),
+		configB: hclC(n, "memory      = 134217728\n  memory_swap = 402653184"),
+	})
+}
+
+// --- More ForceNew object-block changes (exercise the forceNewLeaves fix) ---
+
+func TestAccDepContainerDeviceChangeRecreates(t *testing.T) {
+	n := randDepName("dev")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "devices", recreate: true,
+		configA: hclC(n, "devices {\n    host_path      = \"/dev/zero\"\n    container_path = \"/dev/myzero\"\n  }"),
+		configB: hclC(n, "devices {\n    host_path      = \"/dev/zero\"\n    container_path = \"/dev/myzero2\"\n  }"),
+	})
+}
+
+func TestAccDepContainerTmpfsMountTargetChangeRecreates(t *testing.T) {
+	n := randDepName("tmpfsm")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "mounts tmpfs", recreate: true,
+		configA: hclC(n, "mounts {\n    type   = \"tmpfs\"\n    target = \"/cache\"\n  }"),
+		configB: hclC(n, "mounts {\n    type   = \"tmpfs\"\n    target = \"/cache2\"\n  }"),
+	})
+}
+
+func TestAccDepContainerUploadContentChangeRecreates(t *testing.T) {
+	n := randDepName("upload")
+	runDepRecreateTest(t, depRecreateTest{
+		resourceName: "podman_container.test", label: "upload", recreate: true,
+		configA: hclC(n, "upload {\n    file    = \"/etc/tf-dep.txt\"\n    content = \"version-a\"\n  }"),
+		configB: hclC(n, "upload {\n    file    = \"/etc/tf-dep.txt\"\n    content = \"version-b\"\n  }"),
+	})
+}

@@ -148,6 +148,124 @@ resource "podman_container" "test" {
 	})
 }
 
+// TestAccDepImageRepoDigestChangeRecreatesContainer wires the container to the
+// image's computed repo_digest. Switching the image name to a different tag
+// changes the digest, recreating the container.
+func TestAccDepImageRepoDigestChangeRecreatesContainer(t *testing.T) {
+	cname := randDepName("digest")
+	var before, after string
+	cfg := func(imageName string) string {
+		return fmt.Sprintf(`
+resource "podman_image" "base" {
+  name         = %q
+  keep_locally = true
+}
+
+resource "podman_container" "test" {
+  name  = %q
+  image = podman_image.base.repo_digest
+  start = false
+}
+`, imageName, cname)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccDepPullImages(t, depImage, "docker.io/library/alpine:3.19")
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPodmanContainerDestroy,
+		Steps: []resource.TestStep{
+			{Config: cfg(depImage), Check: captureID("podman_container.test", &before)},
+			{Config: cfg("docker.io/library/alpine:3.19"), Check: resource.ComposeTestCheckFunc(
+				captureID("podman_container.test", &after),
+				requireRecreated("container on repo_digest change", &before, &after),
+			)},
+		},
+	})
+}
+
+// TestAccDepImageNameChangeContainerLabelInPlace wires the image's image_id into
+// a container label (an in-place attribute); the container must update in place.
+func TestAccDepImageNameChangeContainerLabelInPlace(t *testing.T) {
+	cname := randDepName("imglbl")
+	var before, after string
+	cfg := func(imageName string) string {
+		return fmt.Sprintf(`
+resource "podman_image" "base" {
+  name         = %q
+  keep_locally = true
+}
+
+resource "podman_container" "test" {
+  name  = %q
+  image = %q
+  start = false
+  labels {
+    label = "image-id"
+    value = podman_image.base.image_id
+  }
+}
+`, imageName, cname, depImage)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccDepPullImages(t, depImage, "docker.io/library/alpine:3.19")
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPodmanContainerDestroy,
+		Steps: []resource.TestStep{
+			{Config: cfg(depImage), Check: captureID("podman_container.test", &before)},
+			{Config: cfg("docker.io/library/alpine:3.19"), Check: resource.ComposeTestCheckFunc(
+				captureID("podman_container.test", &after),
+				requireNotRecreated("container label on image_id", &before, &after),
+			)},
+		},
+	})
+}
+
+// TestAccDepImageSwapBetweenTwoImagesRecreatesContainer points the container at
+// a different image resource's image_id, recreating the container.
+func TestAccDepImageSwapBetweenTwoImagesRecreatesContainer(t *testing.T) {
+	cname := randDepName("imgswap")
+	var before, after string
+	cfg := func(which string) string {
+		return fmt.Sprintf(`
+resource "podman_image" "a" {
+  name         = %q
+  keep_locally = true
+}
+
+resource "podman_image" "b" {
+  name         = "docker.io/library/alpine:3.19"
+  keep_locally = true
+}
+
+resource "podman_container" "test" {
+  name  = %q
+  image = podman_image.%s.image_id
+  start = false
+}
+`, depImage, cname, which)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccDepPullImages(t, depImage, "docker.io/library/alpine:3.19")
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPodmanContainerDestroy,
+		Steps: []resource.TestStep{
+			{Config: cfg("a"), Check: captureID("podman_container.test", &before)},
+			{Config: cfg("b"), Check: resource.ComposeTestCheckFunc(
+				captureID("podman_container.test", &after),
+				requireRecreated("container on image swap", &before, &after),
+			)},
+		},
+	})
+}
+
 // TestAccDepContainerEnvChangeInPlace verifies the negative case: changing an
 // in-place-updatable attribute (env) must NOT recreate the container.
 func TestAccDepContainerEnvChangeInPlace(t *testing.T) {
