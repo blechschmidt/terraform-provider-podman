@@ -46,8 +46,12 @@ func getRegistryFromImageName(imageName string) string {
 	return "docker.io"
 }
 
-// suppressIfIDOrNameEqual is a DiffSuppressFunc that suppresses diffs for image references
-// where one is an ID (sha256:xxx) and the other is a name that resolves to it.
+// suppressIfIDOrNameEqual is a DiffSuppressFunc that suppresses diffs between the
+// different spellings of the *same* image ID (e.g. "sha256:abc123…" vs the bare or
+// truncated "abc123…"). It must NOT suppress diffs between two distinct image names or
+// tags such as "alpine" -> "alpine:3.19" or "nginx" -> "nginx-unprivileged": those are
+// real changes, and because the image field is ForceNew they have to recreate the
+// container.
 func suppressIfIDOrNameEqual(_, old, new string, _ *schema.ResourceData) bool {
 	if old == new {
 		return true
@@ -55,14 +59,33 @@ func suppressIfIDOrNameEqual(_, old, new string, _ *schema.ResourceData) bool {
 	if old == "" || new == "" {
 		return false
 	}
-	// Suppress if both refer to same image by stripping sha256: prefix
+	// Collapse the sha256:/short-ID spellings of the same image ID, but only when both
+	// values actually look like hex image IDs. Restricting the prefix match to IDs keeps
+	// human-readable image names that merely share a prefix from being mistaken for the
+	// same image (and thus silently skipping the required recreation).
 	oldClean := strings.TrimPrefix(old, "sha256:")
 	newClean := strings.TrimPrefix(new, "sha256:")
-	if len(oldClean) > 0 && len(newClean) > 0 &&
+	if isImageID(oldClean) && isImageID(newClean) &&
 		(strings.HasPrefix(oldClean, newClean) || strings.HasPrefix(newClean, oldClean)) {
 		return true
 	}
 	return false
+}
+
+// isImageID reports whether s looks like a (possibly truncated) container image ID: a
+// lowercase hex string of at least 12 characters, the minimum length Podman and Docker
+// use for a short ID. Image names and tags always contain non-hex characters (':', '/',
+// or letters beyond a-f), so they are never mistaken for an ID.
+func isImageID(s string) bool {
+	if len(s) < 12 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // mapStringInterfaceToStringString converts map[string]interface{} to map[string]string.

@@ -194,6 +194,44 @@ func TestSuppressIfIDOrNameEqual(t *testing.T) {
 			new:      "nginx:1.21",
 			expected: false,
 		},
+		{
+			// Regression: adding a tag to a bare name is a real change and must
+			// recreate the container, even though "alpine" prefixes "alpine:3.19".
+			name:     "name to tagged name",
+			old:      "alpine",
+			new:      "alpine:3.19",
+			expected: false,
+		},
+		{
+			// Regression: one name being a prefix of another (e.g. a different repo)
+			// must not be suppressed.
+			name:     "name prefix of different name",
+			old:      "nginx",
+			new:      "nginx-unprivileged",
+			expected: false,
+		},
+		{
+			// Regression: a longer tag that string-prefixes the old tag is still a
+			// different image.
+			name:     "tag prefix of different tag",
+			old:      "redis:6",
+			new:      "redis:6.2",
+			expected: false,
+		},
+		{
+			// short ID is a prefix of the full sha256 digest -> same image.
+			name:     "short id prefix of full digest",
+			old:      "sha256:abcdef0123456789",
+			new:      "abcdef012345",
+			expected: true,
+		},
+		{
+			// two distinct image IDs of equal length must not be suppressed.
+			name:     "distinct image ids",
+			old:      "abcdef012345",
+			new:      "0123456789ab",
+			expected: false,
+		},
 	}
 
 	for _, tc := range tests {
