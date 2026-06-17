@@ -1450,7 +1450,15 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 	if c.Domainname != "" {
 		d.Set("domainname", c.Domainname)
 	}
-	d.Set("user", c.User)
+	// Only echo back the user when it was configured. Podman's compat
+	// inspect reports the image's effective user (e.g. "nonroot" or
+	// "65532:65532") even when the resource never set `user`; because
+	// `user` is ForceNew, writing that derived value into state would
+	// force replacement on every apply. Preserve the configured value
+	// (empty when unset) — same approach as capabilities/ulimits below.
+	if _, ok := d.GetOk("user"); ok {
+		d.Set("user", c.User)
+	}
 	d.Set("tty", c.Tty)
 	d.Set("stdin_open", c.OpenStdin)
 	d.Set("working_dir", c.WorkingDir)
@@ -1639,12 +1647,42 @@ func resourcePodmanContainerRead(ctx context.Context, d *schema.ResourceData, me
 		// spec, not stored on the container record), so an empty read would
 		// otherwise wipe the user-configured value.
 		if len(hc.Resources.Devices) > 0 {
+			// Podman's compat inspect reports CgroupPermissions as "" even
+			// when the device was created with permissions (the schema
+			// default is "rwm"), so echoing the raw read value back would
+			// clobber the configured permissions and churn the TypeSet hash
+			// on every apply. Recover the configured permissions per device
+			// from prior state (keyed by container path, falling back to
+			// host path) and default to "rwm" when neither is available.
+			configuredPerms := map[string]string{}
+			if v, ok := d.GetOk("devices"); ok {
+				for _, raw := range v.(*schema.Set).List() {
+					cfg := raw.(map[string]interface{})
+					key := cfg["container_path"].(string)
+					if key == "" {
+						key = cfg["host_path"].(string)
+					}
+					if p := cfg["permissions"].(string); p != "" {
+						configuredPerms[key] = p
+					}
+				}
+			}
 			devices := make([]interface{}, len(hc.Resources.Devices))
 			for i, dev := range hc.Resources.Devices {
+				perms := dev.CgroupPermissions
+				if perms == "" {
+					if p, ok := configuredPerms[dev.PathInContainer]; ok {
+						perms = p
+					} else if p, ok := configuredPerms[dev.PathOnHost]; ok {
+						perms = p
+					} else {
+						perms = "rwm"
+					}
+				}
 				devices[i] = map[string]interface{}{
 					"host_path":      dev.PathOnHost,
 					"container_path": dev.PathInContainer,
-					"permissions":    dev.CgroupPermissions,
+					"permissions":    perms,
 				}
 			}
 			d.Set("devices", devices)
